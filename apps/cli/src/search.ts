@@ -102,4 +102,19 @@ export async function searchCatalogue(query: string, limit = 15): Promise<void> 
     }
     console.log("");
   }
+
+  // Tracks inside unsplit rips (.cue).
+  const cueRows = (await prisma.cueTrack.findMany({
+    where: { OR: [{ title: ci }, { performer: ci }] },
+    select: { trackNo: true, title: true, performer: true, startMs: true, cueSheet: { select: { file: { select: { directory: { select: { name: true } } } } } } },
+    take: 20,
+  })) as Array<{ trackNo: number; title: string | null; performer: string | null; startMs: number | null; cueSheet: { file: { directory: { name: string } } } }>;
+  const cueHits = cueRows.filter((c) => c.title);
+  if (cueHits.length > 0) {
+    console.log(`W skladankach (.cue) — ${cueHits.length}:`);
+    for (const c of cueHits) {
+      const start = c.startMs != null ? ` @ ${Math.floor(c.startMs / 60000)}:${Math.round((c.startMs % 60000) / 1000).toString().padStart(2, "0")}` : "";
+      console.log(`  ~ ${c.title}${c.performer ? ` — ${c.performer}` : ""}  (na: ${c.cueSheet.file.directory.name}, sciezka ${c.trackNo}${start})`);
+    }
+  }
 }

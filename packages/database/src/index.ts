@@ -25,7 +25,13 @@ export function createPrismaClient(options: PrismaClientOptions = {}): PrismaCli
     );
   }
   const adapter = new PrismaPg({ connectionString });
-  return new PrismaClient({ adapter, ...(options.log ? { log: options.log } : {}) });
+  return new PrismaClient({
+    adapter,
+    // Batch upserts during a heavy scan can exceed the 5s default while hashing
+    // competes for the event loop; give transactions generous headroom.
+    transactionOptions: { timeout: 120_000, maxWait: 30_000 },
+    ...(options.log ? { log: options.log } : {}),
+  });
 }
 
 let singleton: PrismaClient | undefined;

@@ -258,47 +258,58 @@ export async function runScan(opts: ScanOptions): Promise<void> {
 
     const valid = prepared.filter((p): p is PreparedFile => p !== null);
 
-    if (!dryRun && valid.length > 0) {
-      const ops = valid.flatMap((f) => {
-        const directoryId = dirIdByRel.get(f.entry.parentRelPath) ?? dirIdByRel.get("")!;
-        const fileData = {
-          directoryId,
-          volumeId: volume.id,
-          relPath: f.core.relPath,
-          filename: f.core.filename,
-          filenameLower: f.core.filenameLower,
-          filenameNorm: f.core.filenameNorm,
-          filenameNormAscii: f.core.filenameNormAscii,
-          extension: f.core.extension,
-          fileType: f.core.fileType as never,
-          sizeBytes: f.sizeBytes,
-          mtime: f.mtime,
-          ctime: f.ctime,
-          contentHash: f.contentHash,
-          hashAlgo: f.contentHash ? HASH_ALGO : null,
-          isHidden: f.core.isHidden,
-          isSystem: f.core.isSystem,
-          scanStatus: f.scanStatus as never,
-          scanError: f.scanError,
-        };
-        const upsertFile = prisma.file.upsert({
-          where: { volumeId_relPath: { volumeId: volume.id, relPath: f.core.relPath } },
-          create: { id: f.id, ...fileData, firstSeenRunId: run.id, lastSeenRunId: run.id },
-          update: { ...fileData, lastSeenRunId: run.id },
+    if (!dryRun) {
+      // Persist in small sub-batches so no single transaction runs long; a failed
+      // sub-batch is logged and retried on the next scan (files stay idempotent).
+      const DB_CHUNK = 100;
+      for (let j = 0; j < valid.length; j += DB_CHUNK) {
+        const sub = valid.slice(j, j + DB_CHUNK);
+        const ops = sub.flatMap((f) => {
+          const directoryId = dirIdByRel.get(f.entry.parentRelPath) ?? dirIdByRel.get("")!;
+          const fileData = {
+            directoryId,
+            volumeId: volume.id,
+            relPath: f.core.relPath,
+            filename: f.core.filename,
+            filenameLower: f.core.filenameLower,
+            filenameNorm: f.core.filenameNorm,
+            filenameNormAscii: f.core.filenameNormAscii,
+            extension: f.core.extension,
+            fileType: f.core.fileType as never,
+            sizeBytes: f.sizeBytes,
+            mtime: f.mtime,
+            ctime: f.ctime,
+            contentHash: f.contentHash,
+            hashAlgo: f.contentHash ? HASH_ALGO : null,
+            isHidden: f.core.isHidden,
+            isSystem: f.core.isSystem,
+            scanStatus: f.scanStatus as never,
+            scanError: f.scanError,
+          };
+          const upsertFile = prisma.file.upsert({
+            where: { volumeId_relPath: { volumeId: volume.id, relPath: f.core.relPath } },
+            create: { id: f.id, ...fileData, firstSeenRunId: run.id, lastSeenRunId: run.id },
+            update: { ...fileData, lastSeenRunId: run.id },
+          });
+          const list = [upsertFile];
+          if (f.audio) {
+            list.push(
+              prisma.audioFile.upsert({
+                where: { fileId: f.id },
+                create: { fileId: f.id, ...audioData(f.audio) },
+                update: audioData(f.audio),
+              }) as never,
+            );
+          }
+          return list;
         });
-        const list = [upsertFile];
-        if (f.audio) {
-          list.push(
-            prisma.audioFile.upsert({
-              where: { fileId: f.id },
-              create: { fileId: f.id, ...audioData(f.audio) },
-              update: audioData(f.audio),
-            }) as never,
-          );
+        try {
+          await prisma.$transaction(ops);
+        } catch (err) {
+          errorCount += sub.length;
+          logger.warn({ err: `${err}` }, "batch persist failed (will retry on next scan)");
         }
-        return list;
-      });
-      await prisma.$transaction(ops);
+      }
     }
 
     for (const f of valid) {

@@ -29,6 +29,18 @@ export interface SearchHit {
   otherFiles: Array<{ filename: string; fileType: string }>;
 }
 
+export interface CueHit {
+  title: string;
+  performer: string | null;
+  trackNo: number;
+  startMs: number | null;
+  endMs: number | null;
+  directoryId: string;
+  albumName: string;
+  dirRelPath: string;
+  ripFileId: string | null;
+}
+
 export interface VolumeSummary {
   id: string;
   label: string;

@@ -91,7 +91,7 @@ export default function DirectoryPage() {
         <Box>
           <Typography variant="subtitle2" gutterBottom>.cue ({data.cueTracks.length} ścieżek)</Typography>
           <Stack direction="row" useFlexGap spacing={0.5} sx={{ flexWrap: "wrap" }}>
-            {data.cueTracks.map((c) => <Chip key={c.trackNo} label={`${c.trackNo}. ${c.title ?? ""}`} size="small" variant="outlined" />)}
+            {data.cueTracks.map((c) => <Chip key={c.trackNo} label={`${c.trackNo}. ${c.title ?? ""}${c.startMs != null ? ` · ${fmtDuration(c.startMs / 1000)}` : ""}`} size="small" variant="outlined" />)}
           </Stack>
         </Box>
       ) : null}

@@ -10,9 +10,9 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { CoverImage } from "@/components/CoverImage";
 import { fmtDuration, getJson } from "@/lib/fetcher";
-import type { SearchHit } from "@/lib/types";
+import type { CueHit, SearchHit } from "@/lib/types";
 
-interface SearchResponse { query: string; total: number; hits: SearchHit[] }
+interface SearchResponse { query: string; total: number; hits: SearchHit[]; cueHits: CueHit[] }
 
 export default function SearchPage() {
   const [input, setInput] = useState("");
@@ -40,7 +40,7 @@ export default function SearchPage() {
 
       {q.length === 0 ? (
         <Typography color="text.secondary">Wpisz zapytanie, aby przeszukać katalog.</Typography>
-      ) : data && data.hits.length === 0 && !isFetching ? (
+      ) : data && data.hits.length === 0 && data.cueHits.length === 0 && !isFetching ? (
         <Typography color="text.secondary">Brak wyników dla „{q}”.</Typography>
       ) : (
         <Stack spacing={1.5}>
@@ -72,6 +72,27 @@ export default function SearchPage() {
               </Box>
             </Paper>
           ))}
+
+          {data && data.cueHits.length > 0 ? (
+            <>
+              <Typography variant="subtitle2" sx={{ mt: 1 }}>W składankach (.cue)</Typography>
+              {data.cueHits.map((c, i) => (
+                <Paper key={`${c.directoryId}-${c.trackNo}-${i}`} sx={{ p: 1.5 }}>
+                  <Box sx={{ display: "flex", alignItems: "baseline", gap: 1 }}>
+                    <Chip label="rip" size="small" color="warning" variant="outlined" sx={{ height: 18, fontSize: 10 }} />
+                    <Typography sx={{ fontWeight: 600 }} noWrap>{c.title}</Typography>
+                    {c.performer ? <Typography variant="body2" color="text.secondary" noWrap>{c.performer}</Typography> : null}
+                    {c.startMs != null ? <Typography variant="caption" color="text.disabled" sx={{ ml: "auto" }}>start {fmtDuration(c.startMs / 1000)}</Typography> : null}
+                  </Box>
+                  <Link href={`/directory/${c.directoryId}`} style={{ color: "inherit" }}>
+                    <Typography variant="caption" color="text.disabled" noWrap sx={{ display: "block", "&:hover": { textDecoration: "underline" } }}>
+                      na: {c.albumName} · ścieżka {c.trackNo}
+                    </Typography>
+                  </Link>
+                </Paper>
+              ))}
+            </>
+          ) : null}
         </Stack>
       )}
     </Stack>

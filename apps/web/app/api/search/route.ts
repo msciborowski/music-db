@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { flattenDiacritics } from "@/lib/text";
 import { prisma } from "@/lib/db";
 import { pickCover } from "@/lib/cover";
-import type { SearchHit } from "@/lib/types";
+import type { CueHit, SearchHit } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,5 +63,24 @@ export async function GET(req: Request) {
     h.otherFiles = sibs.filter((s) => s.fileType !== "AUDIO" && s.id !== h.fileId).slice(0, 20).map((s) => ({ filename: s.filename, fileType: s.fileType }));
   }
 
-  return NextResponse.json({ query: q, total: byId.size, hits });
+  // Tracks that live inside an unsplit rip (.cue) — searchable even though they
+  // are not standalone files. The rip file + start offset is the "reach here".
+  const cueRows = (await db.cueTrack.findMany({
+    where: { OR: [{ title: ci }, { performer: ci }] },
+    select: {
+      trackNo: true, title: true, performer: true, startMs: true, endMs: true,
+      cueSheet: { select: { refAudioFileId: true, file: { select: { directoryId: true, directory: { select: { name: true, relPath: true } } } } } },
+    },
+    take: 40,
+  })) as Array<{ trackNo: number; title: string | null; performer: string | null; startMs: number | null; endMs: number | null; cueSheet: { refAudioFileId: string | null; file: { directoryId: string; directory: { name: string; relPath: string } } } }>;
+
+  const cueHits: CueHit[] = cueRows
+    .filter((c) => c.title)
+    .map((c) => ({
+      title: c.title!, performer: c.performer, trackNo: c.trackNo, startMs: c.startMs, endMs: c.endMs,
+      directoryId: c.cueSheet.file.directoryId, albumName: c.cueSheet.file.directory.name, dirRelPath: c.cueSheet.file.directory.relPath,
+      ripFileId: c.cueSheet.refAudioFileId,
+    }));
+
+  return NextResponse.json({ query: q, total: byId.size, hits, cueHits });
 }
