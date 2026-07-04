@@ -1,0 +1,35 @@
+{
+  "name": "music-db",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Music DB (mdb) — cataloguing tool for external music archives",
+  "type": "module",
+  "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "npm run dev -w @mdb/cli",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "mdb": "npm run dev -w @mdb/cli --",
+    "web": "npm run dev -w @mdb/web",
+    "db:generate": "npm run generate -w @mdb/database",
+    "db:migrate": "npm run migrate -w @mdb/database",
+    "db:deploy": "npm run deploy -w @mdb/database",
+    "db:seed": "npm run seed -w @mdb/database",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.0",
+    "turbo": "2.10.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  }
+}

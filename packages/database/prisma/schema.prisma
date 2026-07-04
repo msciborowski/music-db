@@ -1,0 +1,436 @@
+// Music DB — Prisma schema (Milestone 1)
+// Convention: Prisma models PascalCase / fields camelCase.
+// Physical Postgres names are snake_case via @map / @@map (spec §6).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- ENUMS ----------
+enum FileType {
+  AUDIO
+  CUE
+  PLAYLIST
+  IMAGE
+  TEXT
+  LOG
+  METADATA
+  ARCHIVE
+  SYSTEM
+  OTHER
+
+  @@map("file_type")
+}
+
+enum ScanStatus {
+  DISCOVERED
+  HASHED
+  METADATA_READ
+  FINGERPRINTED
+  ERROR
+
+  @@map("scan_status")
+}
+
+enum BitrateMode {
+  CBR
+  VBR
+  ABR
+  UNKNOWN
+
+  @@map("bitrate_mode")
+}
+
+enum DirectoryType {
+  ALBUM
+  ALBUM_RIP
+  MULTIDISC_PARENT
+  MULTIDISC_CHILD
+  MIXED
+  NON_AUDIO
+  UNKNOWN
+
+  @@map("directory_type")
+}
+
+enum RunKind {
+  SCAN
+  FINGERPRINT
+  ANALYZE
+  ENRICH
+
+  @@map("run_kind")
+}
+
+enum RunStatus {
+  RUNNING
+  COMPLETED
+  FAILED
+  INTERRUPTED
+
+  @@map("run_status")
+}
+
+enum DuplicateKind {
+  EXACT_HASH
+  AUDIO_FINGERPRINT
+  FUZZY_NAME
+
+  @@map("duplicate_kind")
+}
+
+enum ExternalSource {
+  ACOUSTID
+  MUSICBRAINZ
+  DISCOGS
+
+  @@map("external_source")
+}
+
+enum MetaScope {
+  FILE
+  ALBUM
+  FINGERPRINT
+
+  @@map("meta_scope")
+}
+
+enum VersionType {
+  UNKNOWN
+  ORIGINAL
+  RADIO_EDIT
+  EXTENDED
+  CLUB_MIX
+  INSTRUMENTAL
+  ACAPELLA
+  REMIX
+  DUB
+  LIVE
+  DEMO
+  REMASTER
+  EDIT
+  OTHER
+
+  @@map("version_type")
+}
+
+// ---------- IDENTITY / RUNS ----------
+model Volume {
+  id           String      @id @default(uuid())
+  label        String
+  serialNumber String?     @unique @map("serial_number") // Windows volume serial / Mac+Linux FS UUID — stable key
+  fsType       String?     @map("fs_type")
+  totalBytes   BigInt?     @map("total_bytes")
+  notes        String?
+  firstSeenAt  DateTime    @default(now()) @map("first_seen_at")
+  directories  Directory[]
+  files        File[]
+  runs         Run[]
+
+  @@map("volumes")
+}
+
+model Run {
+  id          String    @id @default(uuid())
+  kind        RunKind
+  status      RunStatus @default(RUNNING)
+  volume      Volume?   @relation(fields: [volumeId], references: [id])
+  volumeId    String?   @map("volume_id")
+  hostname    String? // which machine (PC/Mac)
+  mountPath   String?   @map("mount_path") // e.g. "E:/Muzyka" — NON-PERSISTENT snapshot
+  rootRelPath String?   @map("root_rel_path")
+  options     Json?
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  dirsSeen    Int       @default(0) @map("dirs_seen")
+  filesSeen   Int       @default(0) @map("files_seen")
+  audioSeen   Int       @default(0) @map("audio_seen")
+  errors      Int       @default(0)
+  bytesSeen   BigInt    @default(0) @map("bytes_seen")
+
+  @@index([volumeId])
+  @@index([kind])
+  @@index([status])
+  @@map("runs")
+}
+
+// ---------- TREE ----------
+model Directory {
+  id                String        @id @default(uuid())
+  volume            Volume        @relation(fields: [volumeId], references: [id])
+  volumeId          String        @map("volume_id")
+  relPath           String        @map("rel_path") // relative to volume root — stable across machines
+  name              String
+  parent            Directory?    @relation("DirTree", fields: [parentId], references: [id])
+  parentId          String?       @map("parent_id")
+  children          Directory[]   @relation("DirTree")
+  depth             Int
+  fileCount         Int           @default(0) @map("file_count")
+  audioCount        Int           @default(0) @map("audio_count")
+  hasCue            Boolean       @default(false) @map("has_cue")
+  type              DirectoryType @default(UNKNOWN)
+  multidiscParent   Directory?    @relation("Multidisc", fields: [multidiscParentId], references: [id])
+  multidiscParentId String?       @map("multidisc_parent_id")
+  multidiscChildren Directory[]   @relation("Multidisc")
+  files             File[]
+  firstSeenRunId    String?       @map("first_seen_run_id")
+  lastSeenRunId     String?       @map("last_seen_run_id")
+
+  @@unique([volumeId, relPath])
+  @@index([parentId])
+  @@index([hasCue])
+  @@index([multidiscParentId])
+  @@map("directories")
+}
+
+model File {
+  id                String            @id @default(uuid())
+  directory         Directory         @relation(fields: [directoryId], references: [id])
+  directoryId       String            @map("directory_id")
+  volume            Volume            @relation(fields: [volumeId], references: [id])
+  volumeId          String            @map("volume_id")
+  relPath           String            @map("rel_path") // full path relative to volume root (dir + filename)
+  filename          String // original, exact case
+  filenameLower     String            @map("filename_lower") // lowercase
+  filenameNorm      String            @map("filename_norm") // heavy fuzzy key (with diacritics)
+  filenameNormAscii String            @map("filename_norm_ascii") // fuzzy key, diacritics flattened
+  extension         String // lowercase, no dot
+  fileType          FileType          @map("file_type")
+  sizeBytes         BigInt            @map("size_bytes")
+  mtime             DateTime?
+  ctime             DateTime?
+  contentHash       String?           @map("content_hash") // xxhash64 / sha256
+  hashAlgo          String?           @map("hash_algo")
+  isHidden          Boolean           @default(false) @map("is_hidden")
+  isSystem          Boolean           @default(false) @map("is_system")
+  scanStatus        ScanStatus        @default(DISCOVERED) @map("scan_status")
+  scanError         String?           @map("scan_error")
+  firstSeenRunId    String?           @map("first_seen_run_id")
+  lastSeenRunId     String?           @map("last_seen_run_id")
+  audio             AudioFile?
+  cueSheet          CueSheet? // set when this file IS a .cue
+  tags              FileTag[]
+  dupMemberships    DuplicateMember[]
+
+  @@unique([volumeId, relPath])
+  @@index([contentHash])
+  @@index([filenameLower])
+  @@index([filenameNorm])
+  @@index([fileType])
+  @@index([scanStatus])
+  @@index([directoryId])
+  @@map("files")
+}
+
+model AudioFile {
+  fileId String @id @map("file_id")
+  file   File   @relation(fields: [fileId], references: [id])
+
+  // technical
+  codec       String?
+  durationSec Float?      @map("duration_sec")
+  bitrate     Int?
+  bitrateMode BitrateMode @default(UNKNOWN) @map("bitrate_mode")
+  sampleRate  Int?        @map("sample_rate")
+  channels    Int?
+  lossless    Boolean     @default(false)
+
+  // raw tags (as read)
+  tagTitle       String? @map("tag_title")
+  tagArtist      String? @map("tag_artist")
+  tagAlbum       String? @map("tag_album")
+  tagAlbumArtist String? @map("tag_album_artist")
+  tagTrackNo     Int?    @map("tag_track_no")
+  tagDiscNo      Int?    @map("tag_disc_no")
+  tagYear        Int?    @map("tag_year")
+  tagGenre       String? @map("tag_genre")
+  tagComment     String? @map("tag_comment")
+  hasId3v1       Boolean @default(false) @map("has_id3v1")
+  hasId3v2       Boolean @default(false) @map("has_id3v2")
+  id3v2Version   String? @map("id3v2_version")
+  encodingGuess  String? @map("encoding_guess") // cp1250 / iso-8859-2 / utf-8 ...
+  rawTagBytes    Bytes?  @map("raw_tag_bytes") // kept on suspected mojibake — re-decode without disk
+
+  // parsed from filename
+  parsedTitle   String? @map("parsed_title")
+  parsedArtist  String? @map("parsed_artist")
+  parsedTrackNo Int?    @map("parsed_track_no")
+
+  // normalized (Analyze phase)
+  normTitle       String? @map("norm_title")
+  normTitleAscii  String? @map("norm_title_ascii")
+  normArtist      String? @map("norm_artist")
+  normArtistAscii String? @map("norm_artist_ascii")
+
+  // fingerprint (disk / Enrich phase)
+  fingerprint    String?
+  fingerprintDur Float?  @map("fingerprint_dur")
+  acoustId       String? @map("acoust_id")
+
+  // BPM + key for harmonic mixing (computed from audio, disk phase)
+  bpm          Float?  @map("bpm")
+  musicalKey   String? @map("musical_key") // raw detected key, e.g. "Am"
+  camelot      String? @map("camelot") // Camelot code, e.g. "8A"
+  keyBpmSource String? @map("key_bpm_source") // COMPUTED / TAG
+
+  // cross-check vs external reference (AcousticBrainz, by MBID)
+  refBpm       Float?  @map("ref_bpm")
+  refCamelot   String? @map("ref_camelot")
+  bpmConfirmed Boolean @default(false) @map("bpm_confirmed")
+  keyConfirmed Boolean @default(false) @map("key_confirmed")
+
+  // rip flags (Analyze phase)
+  isAlbumRip  Boolean   @default(false) @map("is_album_rip")
+  needsSplit  Boolean   @default(false) @map("needs_split")
+  cueSheet    CueSheet? @relation("RipCue", fields: [cueSheetId], references: [id])
+  cueSheetId  String?   @map("cue_sheet_id")
+
+  // reconciliation
+  resolvedTitle  String? @map("resolved_title")
+  resolvedArtist String? @map("resolved_artist")
+  resolvedSource String? @map("resolved_source") // TAG / FILENAME / EXTERNAL / MANUAL
+
+  // version + work (Analyze phase)
+  versionType   VersionType @default(UNKNOWN) @map("version_type")
+  versionLabel  String?     @map("version_label") // raw descriptor, e.g. "Extended Club Mix"
+  baseTitleNorm String?     @map("base_title_norm") // title without version descriptor — key to Work
+  work          Work?       @relation(fields: [workId], references: [id])
+  workId        String?     @map("work_id")
+
+  @@index([normTitle])
+  @@index([normArtist])
+  @@index([acoustId])
+  @@index([isAlbumRip])
+  @@index([needsSplit])
+  @@index([workId])
+  @@index([baseTitleNorm])
+  @@index([camelot])
+  @@index([bpm])
+  @@map("audio_files")
+}
+
+model Work {
+  id         String      @id @default(uuid())
+  titleNorm  String      @map("title_norm") // base title (no version descriptor), normalized
+  artistNorm String?     @map("artist_norm")
+  title      String? // representative display title
+  artist     String?
+  mbWorkId   String?     @map("mb_work_id") // MusicBrainz Work ID (Enrich phase)
+  confidence Float? // heuristic clustering confidence
+  createdAt  DateTime    @default(now()) @map("created_at")
+  audioFiles AudioFile[]
+
+  @@index([titleNorm, artistNorm])
+  @@map("works")
+}
+
+// Offline AcousticBrainz reference (imported dataset), keyed by MusicBrainz
+// recording MBID — used to cross-verify computed BPM/key.
+model AcousticBrainzRef {
+  mbid       String   @id
+  bpm        Float?
+  keyKey     String?  @map("key_key")
+  keyScale   String?  @map("key_scale")
+  camelot    String?
+  importedAt DateTime @default(now()) @map("imported_at")
+
+  @@index([camelot])
+  @@map("acousticbrainz_ref")
+}
+
+// ---------- CUE ----------
+model CueSheet {
+  id             String     @id @default(uuid())
+  file           File       @relation(fields: [fileId], references: [id])
+  fileId         String     @unique @map("file_id")
+  refAudioFileId String?    @map("ref_audio_file_id") // FILE "..." target resolved within the directory
+  rawText        String     @map("raw_text")
+  encodingGuess  String?    @map("encoding_guess")
+  parseStatus    String?    @map("parse_status") // OK / PARTIAL / ERROR
+  parseError     String?    @map("parse_error")
+  tracks         CueTrack[]
+  rips           AudioFile[] @relation("RipCue")
+
+  @@map("cue_sheets")
+}
+
+model CueTrack {
+  id         String   @id @default(uuid())
+  cueSheet   CueSheet @relation(fields: [cueSheetId], references: [id])
+  cueSheetId String   @map("cue_sheet_id")
+  trackNo    Int      @map("track_no")
+  title      String?
+  performer  String?
+  startMs    Int?     @map("start_ms") // computed from INDEX
+  endMs      Int?     @map("end_ms") // computed from next track / file length
+
+  @@index([cueSheetId])
+  @@map("cue_tracks")
+}
+
+// ---------- ENRICH / TAGS / DUPLICATES ----------
+model ExternalMeta {
+  id         String         @id @default(uuid())
+  scope      MetaScope
+  source     ExternalSource
+  refFileId  String?        @map("ref_file_id") // when scope=FILE
+  refDirId   String?        @map("ref_dir_id") // when scope=ALBUM
+  externalId String?        @map("external_id")
+  queryUsed  String?        @map("query_used") // what was queried — for cache/dedup
+  raw        Json
+  fetchedAt  DateTime       @default(now()) @map("fetched_at")
+
+  @@index([source])
+  @@index([refFileId])
+  @@index([refDirId])
+  @@map("external_meta")
+}
+
+model Tag {
+  id     String    @id @default(uuid())
+  name   String
+  kind   String? // genre / style / mood ...
+  source String?
+  files  FileTag[]
+
+  @@unique([name, source])
+  @@map("tags")
+}
+
+model FileTag {
+  file       File    @relation(fields: [fileId], references: [id])
+  fileId     String  @map("file_id")
+  tag        Tag     @relation(fields: [tagId], references: [id])
+  tagId      String  @map("tag_id")
+  confidence Float?
+  source     String?
+
+  @@id([fileId, tagId])
+  @@map("file_tags")
+}
+
+model DuplicateGroup {
+  id              String            @id @default(uuid())
+  kind            DuplicateKind
+  canonicalFileId String?           @map("canonical_file_id") // chosen "keep" copy (future)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  members         DuplicateMember[]
+
+  @@map("duplicate_groups")
+}
+
+model DuplicateMember {
+  group   DuplicateGroup @relation(fields: [groupId], references: [id])
+  groupId String         @map("group_id")
+  file    File           @relation(fields: [fileId], references: [id])
+  fileId  String         @map("file_id")
+  score   Float?
+
+  @@id([groupId, fileId])
+  @@index([fileId])
+  @@map("duplicate_members")
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@mdb/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"@mdb/api skeleton — NestJS app lands in a later milestone\"",
+    "typecheck": "echo \"skip\"",
+    "clean": "rm -rf dist .turbo"
+  }
+}
