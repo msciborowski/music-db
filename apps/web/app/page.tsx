@@ -6,7 +6,7 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { useQuery } from "@tanstack/react-query";
-import { fmtGB, getJson } from "@/lib/fetcher";
+import { fmtBytes, fmtGB, getJson } from "@/lib/fetcher";
 import type { Stats } from "@/lib/types";
 
 function Tile({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
@@ -60,6 +60,31 @@ export default function Dashboard() {
           </Stack>
         </Box>
       ) : null}
+
+      <Box>
+        <Typography variant="subtitle2" gutterBottom>
+          Baza danych — {fmtBytes(data.dbSize.totalBytes)}{" "}
+          <Typography component="span" variant="caption" color="text.disabled">
+            (dane {fmtBytes(data.dbSize.dataBytes)} · indeksy {fmtBytes(data.dbSize.indexBytes)})
+          </Typography>
+        </Typography>
+        <Paper variant="outlined" sx={{ overflow: "hidden" }}>
+          <Box sx={{ display: "flex", px: 1.5, py: 0.5, bgcolor: "action.hover" }}>
+            <Typography variant="caption" sx={{ flex: 1 }} color="text.secondary">tabela</Typography>
+            <Typography variant="caption" sx={{ width: 90, textAlign: "right" }} color="text.secondary">dane</Typography>
+            <Typography variant="caption" sx={{ width: 90, textAlign: "right" }} color="text.secondary">indeksy</Typography>
+            <Typography variant="caption" sx={{ width: 90, textAlign: "right" }} color="text.secondary">razem</Typography>
+          </Box>
+          {data.dbSize.tables.filter((t) => Number(t.totalBytes) > 0).slice(0, 12).map((t) => (
+            <Box key={t.name} sx={{ display: "flex", px: 1.5, py: 0.5, borderTop: 1, borderColor: "divider" }}>
+              <Typography variant="body2" sx={{ flex: 1 }} noWrap>{t.name}</Typography>
+              <Typography variant="body2" sx={{ width: 90, textAlign: "right" }} color="text.secondary">{fmtBytes(t.dataBytes)}</Typography>
+              <Typography variant="body2" sx={{ width: 90, textAlign: "right" }} color="text.secondary">{fmtBytes(t.indexBytes)}</Typography>
+              <Typography variant="body2" sx={{ width: 90, textAlign: "right" }}>{fmtBytes(t.totalBytes)}</Typography>
+            </Box>
+          ))}
+        </Paper>
+      </Box>
     </Stack>
   );
 }

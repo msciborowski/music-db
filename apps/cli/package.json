@@ -7,7 +7,7 @@
     "mdb": "./dist/index.js"
   },
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "node --max-old-space-size=8192 --import tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

@@ -8,6 +8,16 @@ function gb(bytes: bigint | null | undefined): string {
   return (Number(bytes) / 1e9).toFixed(2);
 }
 
+function fmtBytes(v: unknown): string {
+  const n = typeof v === "bigint" ? Number(v) : Number(v ?? 0);
+  if (!Number.isFinite(n) || n < 1024) return `${Math.round(n)} B`;
+  const kb = n / 1024;
+  if (kb < 1024) return `${kb.toFixed(0)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
 export async function showStats(): Promise<void> {
   const prisma = db();
 
@@ -68,5 +78,23 @@ export async function showStats(): Promise<void> {
   const genres = topGenres.filter((g) => g._count.files > 0);
   if (genres.length > 0) {
     console.log(`  Top genres (Discogs): ${genres.map((g) => `${g.name} (${g._count.files})`).join(", ")}`);
+  }
+
+  const sizeRows = (await prisma.$queryRaw`
+    SELECT c.relname AS name,
+           pg_table_size(c.oid)::bigint AS data_bytes,
+           pg_indexes_size(c.oid)::bigint AS index_bytes,
+           pg_total_relation_size(c.oid)::bigint AS total_bytes
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind = 'r' AND n.nspname = 'public'
+    ORDER BY pg_total_relation_size(c.oid) DESC
+  `) as Array<{ name: string; data_bytes: bigint; index_bytes: bigint; total_bytes: bigint }>;
+  const totalRow = (await prisma.$queryRaw`SELECT pg_database_size(current_database())::bigint AS size`) as Array<{ size: bigint }>;
+  const dataSum = sizeRows.reduce((a, r) => a + Number(r.data_bytes), 0);
+  const indexSum = sizeRows.reduce((a, r) => a + Number(r.index_bytes), 0);
+
+  console.log(`\nDatabase size: ${fmtBytes(totalRow[0]?.size)}  (dane ${fmtBytes(dataSum)}, indeksy ${fmtBytes(indexSum)})`);
+  for (const r of sizeRows.filter((r) => Number(r.total_bytes) > 0).slice(0, 12)) {
+    console.log(`  ${r.name.padEnd(20)} dane ${fmtBytes(r.data_bytes).padStart(9)} · idx ${fmtBytes(r.index_bytes).padStart(9)} · razem ${fmtBytes(r.total_bytes).padStart(9)}`);
   }
 }

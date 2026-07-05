@@ -43,6 +43,24 @@ function statusRank(s: string | null | undefined): number {
   return s === "FINGERPRINTED" ? 3 : s === "METADATA_READ" ? 2 : s === "HASHED" ? 1 : 0;
 }
 
+const NUL = String.fromCharCode(0);
+
+/** Make a string safe for a Postgres text column: drop NUL, fix invalid UTF-8. */
+function pgText(s: string): string {
+  if (!s.includes(NUL) && !/[\uD800-\uDFFF]/.test(s)) return s; // fast path: already clean
+  return Buffer.from(s.split(NUL).join(""), "utf8").toString("utf8");
+}
+
+/** Sanitize every string value of a DB payload (filenames/tags may be malformed). */
+function sanitizeStrings<T extends Record<string, unknown>>(obj: T): T {
+  const out: Record<string, unknown> = {};
+  for (const k in obj) {
+    const v = obj[k];
+    out[k] = typeof v === "string" ? pgText(v) : v;
+  }
+  return out as T;
+}
+
 async function mapPool<T, R>(items: T[], size: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let cursor = 0;
@@ -151,10 +169,12 @@ export async function runScan(opts: ScanOptions): Promise<void> {
         chunk.map((d) => {
           const id = dirIdByRel.get(d.relPath)!;
           const parentId = d.parentRelPath === null ? null : dirIdByRel.get(d.parentRelPath) ?? null;
+          const relPath = pgText(d.relPath);
+          const name = pgText(d.name);
           return prisma.directory.upsert({
-            where: { volumeId_relPath: { volumeId: volume.id, relPath: d.relPath } },
-            create: { id, volumeId: volume.id, relPath: d.relPath, name: d.name, depth: d.depth, parentId, firstSeenRunId: run.id, lastSeenRunId: run.id },
-            update: { name: d.name, depth: d.depth, parentId, lastSeenRunId: run.id },
+            where: { volumeId_relPath: { volumeId: volume.id, relPath } },
+            create: { id, volumeId: volume.id, relPath, name, depth: d.depth, parentId, firstSeenRunId: run.id, lastSeenRunId: run.id },
+            update: { name, depth: d.depth, parentId, lastSeenRunId: run.id },
           });
         }),
       );
@@ -259,23 +279,23 @@ export async function runScan(opts: ScanOptions): Promise<void> {
     const valid = prepared.filter((p): p is PreparedFile => p !== null);
 
     if (!dryRun) {
-      // Persist in small sub-batches so no single transaction runs long; a failed
-      // sub-batch is logged and retried on the next scan (files stay idempotent).
       const DB_CHUNK = 100;
       for (let j = 0; j < valid.length; j += DB_CHUNK) {
         const sub = valid.slice(j, j + DB_CHUNK);
-        const ops = sub.flatMap((f) => {
+        const perFile = sub.map((f) => {
           const directoryId = dirIdByRel.get(f.entry.parentRelPath) ?? dirIdByRel.get("")!;
-          const fileData = {
+          const relPath = pgText(f.core.relPath);
+          // Strings from filenames/tags may hold NUL or invalid UTF-8 — sanitize.
+          const fileData = sanitizeStrings({
             directoryId,
             volumeId: volume.id,
-            relPath: f.core.relPath,
+            relPath,
             filename: f.core.filename,
             filenameLower: f.core.filenameLower,
             filenameNorm: f.core.filenameNorm,
             filenameNormAscii: f.core.filenameNormAscii,
             extension: f.core.extension,
-            fileType: f.core.fileType as never,
+            fileType: f.core.fileType,
             sizeBytes: f.sizeBytes,
             mtime: f.mtime,
             ctime: f.ctime,
@@ -283,31 +303,35 @@ export async function runScan(opts: ScanOptions): Promise<void> {
             hashAlgo: f.contentHash ? HASH_ALGO : null,
             isHidden: f.core.isHidden,
             isSystem: f.core.isSystem,
-            scanStatus: f.scanStatus as never,
+            scanStatus: f.scanStatus,
             scanError: f.scanError,
-          };
-          const upsertFile = prisma.file.upsert({
-            where: { volumeId_relPath: { volumeId: volume.id, relPath: f.core.relPath } },
-            create: { id: f.id, ...fileData, firstSeenRunId: run.id, lastSeenRunId: run.id },
-            update: { ...fileData, lastSeenRunId: run.id },
           });
-          const list = [upsertFile];
+          const ops = [
+            prisma.file.upsert({
+              where: { volumeId_relPath: { volumeId: volume.id, relPath } },
+              create: { id: f.id, ...fileData, firstSeenRunId: run.id, lastSeenRunId: run.id } as never,
+              update: { ...fileData, lastSeenRunId: run.id } as never,
+            }),
+          ];
           if (f.audio) {
-            list.push(
-              prisma.audioFile.upsert({
-                where: { fileId: f.id },
-                create: { fileId: f.id, ...audioData(f.audio) },
-                update: audioData(f.audio),
-              }) as never,
-            );
+            const ad = sanitizeStrings(audioData(f.audio));
+            ops.push(prisma.audioFile.upsert({ where: { fileId: f.id }, create: { fileId: f.id, ...ad } as never, update: ad as never }) as never);
           }
-          return list;
+          return ops;
         });
         try {
-          await prisma.$transaction(ops);
-        } catch (err) {
-          errorCount += sub.length;
-          logger.warn({ err: `${err}` }, "batch persist failed (will retry on next scan)");
+          await prisma.$transaction(perFile.flat());
+        } catch {
+          // A malformed record (invalid byte in a filename/tag) must not sink the
+          // whole sub-batch — retry each file alone and drop only the real culprit.
+          for (const ops of perFile) {
+            try {
+              await prisma.$transaction(ops);
+            } catch (err) {
+              errorCount++;
+              logger.debug({ err: `${err}` }, "file persist failed");
+            }
+          }
         }
       }
     }
@@ -338,20 +362,21 @@ export async function runScan(opts: ScanOptions): Promise<void> {
       let refAudioFileId: string | null = null;
       if (parsed.fileRef) {
         const refRel = cue.parentRelPath ? `${cue.parentRelPath}/${parsed.fileRef}` : parsed.fileRef;
-        const ref = (await prisma.file.findFirst({ where: { volumeId: volume.id, relPath: refRel }, select: { id: true } })) as { id: string } | null;
+        const ref = (await prisma.file.findFirst({ where: { volumeId: volume.id, relPath: pgText(refRel) }, select: { id: true } })) as { id: string } | null;
         refAudioFileId = ref?.id ?? null;
       }
       if (!dryRun) {
+        const cueData = { refAudioFileId, rawText: pgText(parsed.rawText), encodingGuess: parsed.encodingGuess, parseStatus: parsed.parseStatus, parseError: parsed.parseError ?? null };
         await prisma.cueSheet.upsert({
           where: { fileId: cue.id },
-          create: { fileId: cue.id, refAudioFileId, rawText: parsed.rawText, encodingGuess: parsed.encodingGuess, parseStatus: parsed.parseStatus, parseError: parsed.parseError ?? null },
-          update: { refAudioFileId, rawText: parsed.rawText, encodingGuess: parsed.encodingGuess, parseStatus: parsed.parseStatus, parseError: parsed.parseError ?? null },
+          create: { fileId: cue.id, ...cueData },
+          update: cueData,
         });
         const sheet = (await prisma.cueSheet.findUnique({ where: { fileId: cue.id }, select: { id: true } })) as { id: string } | null;
         if (sheet) {
           await prisma.cueTrack.deleteMany({ where: { cueSheetId: sheet.id } });
           if (parsed.tracks.length > 0) {
-            await prisma.cueTrack.createMany({ data: parsed.tracks.map((t) => ({ cueSheetId: sheet.id, trackNo: t.trackNo, title: t.title ?? null, performer: t.performer ?? null, startMs: t.startMs ?? null, endMs: t.endMs ?? null })) });
+            await prisma.cueTrack.createMany({ data: parsed.tracks.map((t) => ({ cueSheetId: sheet.id, trackNo: t.trackNo, title: t.title ? pgText(t.title) : null, performer: t.performer ? pgText(t.performer) : null, startMs: t.startMs ?? null, endMs: t.endMs ?? null })) });
           }
         }
       }

@@ -1,3 +1,17 @@
+export interface DbTableSize {
+  name: string;
+  dataBytes: string;
+  indexBytes: string;
+  totalBytes: string;
+}
+
+export interface DbSize {
+  totalBytes: string;
+  dataBytes: string;
+  indexBytes: string;
+  tables: DbTableSize[];
+}
+
 export interface Stats {
   volumes: number;
   directories: number;
@@ -13,6 +27,7 @@ export interface Stats {
   byType: Array<{ fileType: string; count: number }>;
   duplicates: Array<{ kind: string; count: number }>;
   topGenres: Array<{ name: string; count: number }>;
+  dbSize: DbSize;
 }
 
 export interface SearchHit {
